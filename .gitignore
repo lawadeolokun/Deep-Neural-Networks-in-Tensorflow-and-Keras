@@ -1,0 +1,6 @@
+venv/
+python venv/
+__pycache__/
+*.pyc
+.DS_Store
+chest_xray/
