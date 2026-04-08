@@ -22,7 +22,7 @@ fit = True #make fit false if you do not want to train the network again
 train_dir = '/Users/lawadeolokun/Downloads/chest_xray/train'
 test_dir = '/Users/lawadeolokun/Downloads/chest_xray/test'
 
-with tf.device('/gpu:0'):
+with tf.device('/cpu:0'):
     
     #create training,validation and test datatsets
     train_ds,val_ds = tf.keras.preprocessing.image_dataset_from_directory(
@@ -56,35 +56,54 @@ with tf.device('/gpu:0'):
             plt.axis("off")
     plt.show()
 
+
+    # Data augmentation
+    data_augmentation = tf.keras.Sequential([
+    tf.keras.layers.RandomFlip("horizontal"),
+    tf.keras.layers.RandomRotation(0.1),
+    tf.keras.layers.RandomZoom(0.1),
+])
     #create model
     model = tf.keras.models.Sequential([
         Rescaling(1.0/255),
+        data_augmentation,
         Conv2D(16, (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
+        BatchNormalization(),
         MaxPooling2D(2,2),
         Conv2D(32, (3,3), activation = 'relu'),
+        BatchNormalization(),
         MaxPooling2D(2,2),
         Conv2D(32, (3,3), activation = 'relu'),
+        BatchNormalization(),
         MaxPooling2D(2,2),
         Flatten(), # flatten multidimensional outputs into single dimension for input to dense fully connected layers
         Dense(512, activation = 'relu'),
-        Dropout(0.2),
+        Dropout(0.4),
         Dense(num_classes, activation = 'softmax')
     ])
 
     model.compile(loss='sparse_categorical_crossentropy',
                   optimizer=Adam(),
                   metrics=['accuracy'])
+
     
-    #earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
     save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
+
+    class_weight = {
+    0: 1.0,  # BACTERIAL
+    1: 1.5,  # NORMAL
+    2: 1.5   # VIRAL
+    }
 
     if fit:
         history = model.fit(
             train_ds,
             batch_size=batch_size,
             validation_data=val_ds,
-            callbacks=[save_callback],
-            epochs=epochs)
+            callbacks=[earlystop_callback, save_callback],
+            epochs=epochs,
+            class_weight=class_weight)
     else:
         model = tf.keras.models.load_model("pneumonia.keras")
 
