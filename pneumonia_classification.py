@@ -1,132 +1,202 @@
-
-
 from __future__ import print_function
 
-import keras
 import tensorflow as tf
-from keras.datasets import mnist
-from keras.models import Sequential
-from keras.layers import Dense, Dropout, Flatten, Conv2D, MaxPooling2D, Rescaling, BatchNormalization
-from keras.optimizers import RMSprop,Adam
+from tensorflow import keras
+from tensorflow.keras import layers
 import matplotlib.pyplot as plt
 import numpy as np
 
+# =========================
+# SETTINGS
+# =========================
+batch_size = 16
+epochs = 10
+fine_tune_epochs = 5
 
-batch_size = 12
-num_classes = 3
-epochs = 8
-img_width = 128
-img_height = 128
+img_width = 160
+img_height = 160
 img_channels = 3
-fit = True #make fit false if you do not want to train the network again
+
+fit = True
+
 train_dir = '/Users/lawadeolokun/Downloads/chest_xray/train'
 test_dir = '/Users/lawadeolokun/Downloads/chest_xray/test'
 
 with tf.device('/cpu:0'):
-    
-    #create training,validation and test datatsets
-    train_ds,val_ds = tf.keras.preprocessing.image_dataset_from_directory(
+
+    # =========================
+    # DATASETS
+    # =========================
+    train_ds, val_ds = tf.keras.preprocessing.image_dataset_from_directory(
         train_dir,
         seed=123,
         validation_split=0.2,
         subset='both',
         image_size=(img_height, img_width),
         batch_size=batch_size,
-        labels='inferred',
-        shuffle=True)
-    
+        shuffle=True
+    )
+
     test_ds = tf.keras.preprocessing.image_dataset_from_directory(
         test_dir,
-        seed=None,
         image_size=(img_height, img_width),
         batch_size=batch_size,
-        labels='inferred',
-        shuffle=True)
+        shuffle=True
+    )
 
     class_names = train_ds.class_names
-    print('Class Names: ',class_names)
+    print("Class Names:", class_names)
     num_classes = len(class_names)
-    
-    plt.figure(figsize=(10, 10))
-    for images, labels in train_ds.take(2):
-        for i in range(6):
-            ax = plt.subplot(2, 3, i + 1)
-            plt.imshow(images[i].numpy().astype("uint8"))
-            plt.title(class_names[labels[i].numpy()])
-            plt.axis("off")
-    plt.show()
 
-
-    # Data augmentation
-    data_augmentation = tf.keras.Sequential([
-    tf.keras.layers.RandomFlip("horizontal"),
-    tf.keras.layers.RandomRotation(0.1),
-    tf.keras.layers.RandomZoom(0.1),
-])
-    #create model
-    model = tf.keras.models.Sequential([
-        Rescaling(1.0/255),
-        data_augmentation,
-        Conv2D(16, (3,3), activation = 'relu', input_shape = (img_height,img_width, img_channels)),
-        BatchNormalization(),
-        MaxPooling2D(2,2),
-        Conv2D(32, (3,3), activation = 'relu'),
-        BatchNormalization(),
-        MaxPooling2D(2,2),
-        Conv2D(32, (3,3), activation = 'relu'),
-        BatchNormalization(),
-        MaxPooling2D(2,2),
-        Flatten(), # flatten multidimensional outputs into single dimension for input to dense fully connected layers
-        Dense(512, activation = 'relu'),
-        Dropout(0.4),
-        Dense(num_classes, activation = 'softmax')
+    # =========================
+    # DATA AUGMENTATION
+    # =========================
+    data_augmentation = keras.Sequential([
+        layers.RandomFlip("horizontal"),
+        layers.RandomRotation(0.05),
+        layers.RandomZoom(0.05),
     ])
 
-    model.compile(loss='sparse_categorical_crossentropy',
-                  optimizer=Adam(),
-                  metrics=['accuracy'])
+    # =========================
+    # PRETRAINED MODEL
+    # =========================
+    base_model = tf.keras.applications.MobileNetV2(
+        input_shape=(img_height, img_width, img_channels),
+        include_top=False,
+        weights='imagenet'
+    )
 
-    
-    earlystop_callback = tf.keras.callbacks.EarlyStopping(monitor='val_loss',patience=5)
-    save_callback = tf.keras.callbacks.ModelCheckpoint("pneumonia.keras",save_freq='epoch',save_best_only=True)
+    base_model.trainable = False  # freeze first
 
+    # =========================
+    # MODEL
+    # =========================
+    inputs = keras.Input(shape=(img_height, img_width, img_channels))
+
+    x = layers.Rescaling(1./255)(inputs)
+    x = data_augmentation(x)
+
+    x = base_model(x, training=False)
+
+    x = layers.GlobalAveragePooling2D()(x)
+    x = layers.BatchNormalization()(x)
+    x = layers.Dense(128, activation='relu')(x)
+    x = layers.Dropout(0.5)(x)
+
+    outputs = layers.Dense(num_classes, activation='softmax')(x)
+
+    model = keras.Model(inputs, outputs)
+
+    model.compile(
+        optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=0.0003),
+        loss='sparse_categorical_crossentropy',
+        metrics=['accuracy']
+    )
+
+    model.summary()
+
+    # =========================
+    # CALLBACKS
+    # =========================
+    earlystop_callback = tf.keras.callbacks.EarlyStopping(
+        monitor='val_loss',
+        patience=3,
+        restore_best_weights=True
+    )
+
+    save_callback = tf.keras.callbacks.ModelCheckpoint(
+        "pneumonia_transfer.keras",
+        save_best_only=True
+    )
+
+    # =========================
+    # CLASS WEIGHTS
+    # =========================
     class_weight = {
-    0: 1.0,  # BACTERIAL
-    1: 1.5,  # NORMAL
-    2: 1.5   # VIRAL
+        0: 1.0,   # BACTERIAL
+        1: 1.5,   # NORMAL
+        2: 1.5    # VIRAL
     }
 
+    # =========================
+    # TRAIN (STAGE 1)
+    # =========================
     if fit:
+        print("\n=== Stage 1: Training classifier head ===\n")
+
         history = model.fit(
             train_ds,
-            batch_size=batch_size,
             validation_data=val_ds,
-            callbacks=[earlystop_callback, save_callback],
             epochs=epochs,
-            class_weight=class_weight)
+            callbacks=[earlystop_callback, save_callback],
+            class_weight=class_weight
+        )
+
+        # =========================
+        # 🔥 FINE-TUNING (STAGE 2)
+        # =========================
+        print("\n=== Stage 2: Fine-tuning ===\n")
+
+        base_model.trainable = True
+
+        # Freeze early layers, train top layers
+        for layer in base_model.layers[:-30]:
+            layer.trainable = False
+
+        model.compile(
+            optimizer=tf.keras.optimizers.legacy.Adam(learning_rate=1e-5),
+            loss='sparse_categorical_crossentropy',
+            metrics=['accuracy']
+        )
+
+        history_fine = model.fit(
+            train_ds,
+            validation_data=val_ds,
+            epochs=fine_tune_epochs,
+            callbacks=[earlystop_callback],
+            class_weight=class_weight
+        )
+
     else:
-        model = tf.keras.models.load_model("pneumonia.keras")
+        model = tf.keras.models.load_model("pneumonia_transfer.keras")
 
-    #if shuffle=True when creating the dataset, samples will be chosen randomly   
-    score = model.evaluate(test_ds, batch_size=batch_size)
-    print('Test accuracy:', score[1])
+    # =========================
+    # EVALUATE
+    # =========================
+    score = model.evaluate(test_ds)
+    print("Test accuracy:", score[1])
 
-    
+    # =========================
+    # PLOT ACCURACY
+    # =========================
     if fit:
+        plt.figure()
         plt.plot(history.history['accuracy'])
         plt.plot(history.history['val_accuracy'])
-        plt.title('model accuracy')
-        plt.ylabel('accuracy')
-        plt.xlabel('epoch')
-        plt.legend(['train', 'val'], loc='upper left')
-        
+        plt.title('Model Accuracy')
+        plt.xlabel('Epoch')
+        plt.ylabel('Accuracy')
+        plt.legend(['Train', 'Validation'])
+        plt.show()
+
+    # =========================
+    # PREDICTIONS
+    # =========================
     test_batch = test_ds.take(1)
     plt.figure(figsize=(10, 10))
+
     for images, labels in test_batch:
         for i in range(6):
             ax = plt.subplot(2, 3, i + 1)
             plt.imshow(images[i].numpy().astype("uint8"))
-            prediction = model.predict(tf.expand_dims(images[i].numpy(),0))#perform a prediction on this image
-            plt.title('Actual:' + class_names[labels[i].numpy()]+ '\nPredicted:{} {:.2f}%'.format(class_names[np.argmax(prediction)], 100 * np.max(prediction)))
+
+            prediction = model.predict(tf.expand_dims(images[i], 0), verbose=0)
+            predicted_class = class_names[np.argmax(prediction)]
+            confidence = 100 * np.max(prediction)
+
+            plt.title(
+                f"Actual: {class_names[labels[i]]}\nPredicted: {predicted_class} {confidence:.2f}%"
+            )
             plt.axis("off")
+
     plt.show()
