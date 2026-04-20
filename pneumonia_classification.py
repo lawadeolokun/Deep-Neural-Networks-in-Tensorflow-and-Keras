@@ -200,3 +200,23 @@ with tf.device('/cpu:0'):
             plt.axis("off")
 
     plt.show()
+
+    from collections import Counter
+
+labels = []
+for _, y in train_ds.unbatch():
+    labels.append(int(y))
+
+print(Counter(labels))
+
+from sklearn.metrics import classification_report
+
+y_true = []
+y_pred = []
+
+for images, labels in test_ds:
+    preds = model.predict(images)
+    y_true.extend(labels.numpy())
+    y_pred.extend(np.argmax(preds, axis=1))
+
+print(classification_report(y_true, y_pred, target_names=class_names))
